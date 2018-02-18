@@ -8,11 +8,11 @@ public class ThreadPool {
 	private List<Thread> threads;
 	private BlockingQueue<Socket> blockingQueue;
 	
-	public ThreadPool(int workerCount, int queueSize, String rootDir) {
+	public ThreadPool(int workerCount, int queueSize, String rootDir, int port) {
 		blockingQueue = new BlockingQueue<Socket>(queueSize);
 		threads = new ArrayList<Thread>();
 		for(int i = 0; i < workerCount; i++) {
-			Thread t = new Thread(new Worker(blockingQueue, i, rootDir));
+			Thread t = new Thread(new Worker(blockingQueue, i, rootDir, port));
 			threads.add(t);
 			t.start();
 		}

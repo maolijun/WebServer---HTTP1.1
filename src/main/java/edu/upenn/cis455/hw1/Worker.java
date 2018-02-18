@@ -19,21 +19,22 @@ public class Worker implements Runnable{
 	
 	private BlockingQueue<Socket> blockingQueue;
 	private int number;
-	private String rootDir;
 	private HttpRequest currReq;
 	private static final Logger log = Logger.getLogger(Worker.class.getName());
 	
-	Worker(BlockingQueue<Socket> queue, int num, String rootDirectory) {
+	Worker(BlockingQueue<Socket> queue, int num, String rootDirectory, int port) {
 		blockingQueue = queue;
 		number = num;
-		rootDir = rootDirectory;
-		currReq = new HttpRequest();
+		currReq = new HttpRequest(port, rootDirectory);
 		log.info("Worker thread " + number + " starts running");
 	}
 
+	/**
+	 * Thread body
+	 */
 	public void run() {
+		Socket client = null;
 		while(!Thread.interrupted()) {
-			Socket client = null;
 			try {
 				// retrieve socket from the queue and set timeout for read
 				client = blockingQueue.poll();
@@ -61,6 +62,7 @@ public class Worker implements Runnable{
 			} catch(IOException e) {
 				log.error("Error when closing socket - Worker " + number);
 			}
+			client = null;
 		}
 		log.info("WORKER " + number + " TERMINATES");
 	}
@@ -101,7 +103,8 @@ public class Worker implements Runnable{
 	public void parseRequest(List<String> req) {
 		parseFirstLine(req.get(0));
 		parseHeader(req);
-		currReq.checkHeader();
+		if(!currReq.validHeader() || !currReq.canAccess()) return;
+		currReq.getContent();
 	}
 	
 	/**
@@ -134,18 +137,31 @@ public class Worker implements Runnable{
 		PrintStream output;
 		try {
 			output = new PrintStream(client.getOutputStream(), true);
+			
+			// get status code; generate status line and message body according to status code
 			int code = currReq.getCode();
 			String status = genStatusLine(code);
-			String body;
+			String body = "";
 			if(code == 200) {
 				output.print(genStatusLine(100) + "\r\n");
 				output.print(status);
-				body = "\n<html><body>Hello world!</body></html>\n";
+				
+				String path = currReq.getInitMap().get("Path");
+				if(path.equals("/control")) {
+					body = genControl();
+				} else if(path.equals("/shutdown")) {
+					body = genShutdown();
+				} else {
+					body = "\n<html><body>Hello world!</body></html>\n";
+				}
+				
 			} else {
 				output.print(status);
 				body = genErrorPage(status);
 			}
-			output.print(genHeader());
+			
+			//generate remaining header and send message body with regard to request method
+			output.print(genHeader(body.length()));
 			if(!currReq.getInitMap().get("Type").equals("HEAD")) output.print(body);
 			output.flush();
 			output.close();
@@ -154,30 +170,63 @@ public class Worker implements Runnable{
 		}
 	}
 
-	public String genFileList(String[] files) {
-		// TODO
+	/**********************************/
+	// TODO
+	public String genFileList() {
 		return "";
 	}
 	
+	public String genControl() {
+		return "";
+	}
+	
+	public String genShutdown() {
+		return "";
+	}
+	
+	public String genFileContent() {
+		return "";
+	}
+	/**********************************/
+	
+	/**
+	 * Generate error page with specified error message
+	 * @param line gives the error message
+	 * @return the message body of response
+	 */
 	public String genErrorPage(String line) {
 		String message = line.substring(line.indexOf(" "));
 		StringBuilder sb = new StringBuilder();
-		// TODO
+		sb.append("<html>");
+		sb.append("<head>");
+		sb.append(message);
+		sb.append("</head>");
+		sb.append("</html>");
 		return sb.toString();
 	}
 	
-	public String genHeader() {
+	/**
+	 * Generate the header of the response
+	 * @param len gives the length of the message body
+	 * @return header of the response
+	 */
+	public String genHeader(int len) {
 		StringBuilder sb = new StringBuilder();
-    	SimpleDateFormat date_format = new SimpleDateFormat("EEE, d MMM yyyy HH:mm:ss z");
-    	date_format.setTimeZone(TimeZone.getTimeZone("GMT"));
+    		SimpleDateFormat date_format = new SimpleDateFormat("EEE, d MMM yyyy HH:mm:ss z");
+    		date_format.setTimeZone(TimeZone.getTimeZone("GMT"));
 		sb.append("Date: " + date_format.format(new Date()));
 		sb.append("Content-Type: " + "text/html");
-		sb.append("Content-Length: " + sb.length());
+		sb.append("Content-Length: " + len);
 		sb.append("Connection: Close");
 		sb.append("\r\n");
 		return sb.toString();
 	}
 
+	/**
+	 * Generate the status line of the response
+	 * @param code gives the status of the response with the code
+	 * @return the status line of the response
+	 */
 	public String genStatusLine(int code){
 		StringBuilder sb = new StringBuilder("HTTP/1.1");
 		if(code == 100) sb.append(" 100 Continue\n");

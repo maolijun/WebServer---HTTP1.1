@@ -32,7 +32,7 @@ class HttpServer {
 			log.error("Can not bind the specified port number");
 			return;
 		}
-		pool = new ThreadPool(workers, blockingQueueSize, rootDir);
+		pool = new ThreadPool(workers, blockingQueueSize, rootDir, portNumber);
 		while(true) {
 			try {
 				Socket client = serverSocket.accept();
