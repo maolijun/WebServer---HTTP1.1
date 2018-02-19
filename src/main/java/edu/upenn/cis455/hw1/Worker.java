@@ -1,6 +1,7 @@
 package edu.upenn.cis455.hw1;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
@@ -12,7 +13,6 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.TimeZone;
-
 import org.apache.log4j.Logger;
 
 public class Worker implements Runnable{
@@ -48,6 +48,9 @@ public class Worker implements Runnable{
 	                		
 	                //set up output stream for writing and process response
 	                sendResponse(client);
+	                
+	                // shut down server if necessary
+	                if(currReq.getInitMap().get("Path").equals("/shutdown")) HttpServer.shutDownServer();
 	            } 
 			} catch(InterruptedException e) {
 				log.error("Interrupted when blocking - Worker " + number);
@@ -75,12 +78,14 @@ public class Worker implements Runnable{
 	 */
 	public List<String> readRequest(Socket client) throws InterruptedException{
 		List<String> list = new ArrayList<String>();
+		currReq.setWork();
 		try {
 			InputStreamReader reader= new InputStreamReader(client.getInputStream());
 	        BufferedReader br = new BufferedReader(reader);
 			String line = br.readLine();
 			while(line != null && line.length() != 0) {
 				if(Thread.interrupted()) throw new InterruptedException();
+				if(list.size() == 0) parseFirstLine(line);
 				list.add(line);
 				line = br.readLine();
 			}
@@ -97,14 +102,13 @@ public class Worker implements Runnable{
 	}
 	
 	/**
-	 * Parse the http request
+	 * Parse the HTTP request, check validation and accessibility of the path, and get the requested content
 	 * @param req gives the request body
 	 */
 	public void parseRequest(List<String> req) {
-		parseFirstLine(req.get(0));
 		parseHeader(req);
 		if(!currReq.validHeader() || !currReq.canAccess()) return;
-		currReq.getContent();
+		currReq.checkFile();
 	}
 	
 	/**
@@ -142,17 +146,26 @@ public class Worker implements Runnable{
 			int code = currReq.getCode();
 			String status = genStatusLine(code);
 			String body = "";
+			File file = currReq.getFile();
 			if(code == 200) {
 				output.print(genStatusLine(100) + "\r\n");
 				output.print(status);
 				
+				//generate the message body according to the request path
 				String path = currReq.getInitMap().get("Path");
 				if(path.equals("/control")) {
 					body = genControl();
 				} else if(path.equals("/shutdown")) {
 					body = genShutdown();
+				} else if(file.isDirectory()){
+					body = genFileList();
 				} else {
-					body = "\n<html><body>Hello world!</body></html>\n";
+					output.print(genHeader(file.length()));
+					genFileContent(file, output);
+					output.flush();
+					output.close();
+					//body = "\n<html><body>Hello world!</body></html>\n";
+					return;
 				}
 				
 			} else {
@@ -173,7 +186,47 @@ public class Worker implements Runnable{
 	/**********************************/
 	// TODO
 	public String genFileList() {
-		return "";
+		StringBuilder sb = new StringBuilder();
+    		sb.append("<html>\n");
+    		sb.append("<title>\n");
+    		sb.append("Welcome to the Server\n");
+    		sb.append("</title>\n");
+    		sb.append("<body>\n");
+    		sb.append("<font size=\"5\">\n");
+    		sb.append("<b>");
+    		sb.append("Developer : Lijun Mao<br>");
+    		sb.append("SEAS login: maolijun<br>");
+    		sb.append("</b>");
+    		sb.append("</font>\n");
+    		sb.append("<p>");
+    		sb.append("<table style=\"font-size:20px;\">");
+    		sb.append("<tr><td>");
+    		sb.append("<b>");
+    		sb.append("Files");
+    		sb.append("</b>");
+    		sb.append("</td><td>");
+    		sb.append("<b>");
+    		sb.append("Last Modified");
+    		sb.append("</b>");
+    		sb.append("</td></tr>");
+    		SimpleDateFormat date_format = new SimpleDateFormat("EEE, d MMM yyyy HH:mm:ss z");
+    		File file = currReq.getFile();
+    		for (File f : file.listFiles()) {								
+    			sb.append("<tr><td>");
+    			String path = currReq.getInitMap().get("Path");
+    			if(path.equals("/")) path = "";
+    			String link = path + "/" + f.getName();
+    			sb.append("<a href=\"" + link + "\">" +  f.getName() + "</a>");
+    			sb.append("</td><td>");
+    			sb.append(date_format.format(new Date(f.lastModified())).toString());
+    			sb.append("</td></tr>");
+    		}
+    		sb.append("</table>");
+    		sb.append("<p>");
+    		sb.append("<a href=\"/shutdown\"><button>" +  "Shutdown" + "</button></a>");
+    		sb.append("</body>\n");
+    		sb.append("</html>\n");
+    		return sb.toString();
 	}
 	
 	public String genControl() {
@@ -181,11 +234,17 @@ public class Worker implements Runnable{
 	}
 	
 	public String genShutdown() {
-		return "";
+		StringBuilder sb = new StringBuilder();
+    		sb.append("<html>\n");
+    		sb.append("<body>\n");
+    		sb.append("The Server has been shut down");
+    		sb.append("</body>\n");
+    		sb.append("</html>\n");
+		return sb.toString();
 	}
 	
-	public String genFileContent() {
-		return "";
+	public void genFileContent(File file, PrintStream output) {
+		
 	}
 	/**********************************/
 	
@@ -195,7 +254,7 @@ public class Worker implements Runnable{
 	 * @return the message body of response
 	 */
 	public String genErrorPage(String line) {
-		String message = line.substring(line.indexOf(" "));
+		String message = line.substring(line.indexOf(" ") + 1);
 		StringBuilder sb = new StringBuilder();
 		sb.append("<html>");
 		sb.append("<head>");
@@ -210,14 +269,14 @@ public class Worker implements Runnable{
 	 * @param len gives the length of the message body
 	 * @return header of the response
 	 */
-	public String genHeader(int len) {
+	public String genHeader(long len) {
 		StringBuilder sb = new StringBuilder();
     		SimpleDateFormat date_format = new SimpleDateFormat("EEE, d MMM yyyy HH:mm:ss z");
     		date_format.setTimeZone(TimeZone.getTimeZone("GMT"));
-		sb.append("Date: " + date_format.format(new Date()));
-		sb.append("Content-Type: " + "text/html");
-		sb.append("Content-Length: " + len);
-		sb.append("Connection: Close");
+		sb.append("Date: " + date_format.format(new Date()) + "\n");
+		sb.append("Content-Type: " + currReq.getFileType() + "\n");
+		sb.append("Content-Length: " + len + "\n");
+		sb.append("Connection: Close\n");
 		sb.append("\r\n");
 		return sb.toString();
 	}
@@ -235,6 +294,7 @@ public class Worker implements Runnable{
 		else if(code == 400) sb.append(" 400 Bad Request\n");
 		else if(code == 403) sb.append(" 403 Request Not Allowed\n");
 		else if(code == 404) sb.append(" 404 Not Found\n");
+		else if(code == 412) sb.append(" 412 Precondition Failed\n");
 		else if(code == 500) sb.append(" 500 Internal Server Error\n");
 		else if(code == 501) sb.append(" 501 Not Implemented\n");
 		else if(code == 505) sb.append(" 505 HTTP Version Not Supported\n");

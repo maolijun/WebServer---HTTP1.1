@@ -1,14 +1,22 @@
 package edu.upenn.cis455.hw1;
 
+import java.io.File;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.Stack;
+import java.util.TimeZone;
 
 public class HttpRequest {
 	private Map<String, String> initMap;
 	private Map<String, String> headerMap;
+	private File file;
+	private String fileType;
 	private Set<String> httpVerb;
 	private boolean isWaiting;
 	private String serverAddr;
@@ -18,6 +26,7 @@ public class HttpRequest {
 	HttpRequest(int port, String rootDir) {
 		initMap = new HashMap<String, String>();
 		headerMap = new HashMap<String, String>();
+		fileType = "text/html";
 		httpVerb = new HashSet<String>();
 		isWaiting = true;
 		code = 200;
@@ -34,6 +43,8 @@ public class HttpRequest {
 	public void clear() {
 		initMap.clear();
 		headerMap.clear();
+		file = null;
+		fileType = "text/html";
 		isWaiting = true;
 		code = 200;
 	}
@@ -89,56 +100,164 @@ public class HttpRequest {
 	}
 	
 	/**
+	 * Get the type of the file for the response
+	 * @return the file type
+	 */
+	public String getFileType() {
+		return fileType;
+	}
+	
+	/**
+	 * Get the file object of the resource
+	 * @return the file object
+	 */
+	public File getFile() {
+		return file;
+	}
+	
+	/**
 	 * Check if the given directory or file could be accessed
 	 * @return true if the resource is accessible
 	 */
 	public boolean canAccess() {
+		boolean absolute = false;
 		if(initMap.get("Path").contains("http://")) {
 			// absolute path after host(e.g. http://localhost:8080)
-			String absolutePath = initMap.get("Path").substring(serverAddr.length());
-			initMap.put("Path", absolutePath);
-		}
-		if(!insideRoot(initMap.get("Path"))) code = 403;
+			absolute = true;
+			initMap.put("Path", initMap.get("Path").substring(serverAddr.length()));
+		} 
+		//check if path is accessible
+		if(!simplifyPath(absolute)) code = 403;
 		return code == 200;
 	}
 	
 	/**
-	 * Check if the path is outside the root directory
+	 * Check if the file exists, with valid type, and has satisfying date infomation
+	 */
+	public void checkFile() {
+		String path = initMap.get("Path");
+		if(path.equals("/control") || path.equals("/shutdown")) return;
+		file = new File(path);
+		if(!file.exists()) {
+			code = 404;
+		} else if(file.isFile()) {
+			if(!validFileType()) return;
+			modifyCheck();
+		} 
+	}
+	
+	/**
+	 * Check if the file type is valid
+	 * @return true if the file type could be handled
+	 */
+	public boolean validFileType() {
+		String fileName = initMap.get("Path");
+		int index = fileName.indexOf(".");
+		if(index <= 0) {
+			code = 500;
+		} else {
+			String ext = fileName.substring(index + 1);
+			if(ext.equals("txt")) fileType = "text/plain";
+			else if(ext.equals("gif")) fileType = "image/gif";
+			else if(ext.equals("png")) fileType = "image/png";
+			else if(ext.equals("jpg")) fileType = "image/jpeg";
+			else if(ext.equals("html")) fileType = "text/html";
+			else if(ext.equals("pdf")) fileType = "appllication/pdf";
+			else code = 500;
+		}
+		return code == 200;
+	}
+	
+	/**
+	 * Check if the date condition is satisfied
+	 */
+	public void modifyCheck() {
+		Date lastModified = new Date(file.lastModified());
+		if(headerMap.containsKey("if-modified-since")) {
+			Date requireDate = parseDate(headerMap.get("if-modified-since"));
+			if(requireDate != null && requireDate.after(lastModified)) {
+				code = 304;
+				return;
+			}
+		} 
+		if(headerMap.containsKey("if-unmodified-since")) {
+			Date requireDate = parseDate(headerMap.get("if-unmodified-since"));
+			if(requireDate != null && requireDate.before(lastModified)) code = 412;
+		}
+	}
+	
+	/**
+	 * Parse the date information to well-formed date format
+	 * @param s gives the raw date information
+	 * @return the well-formed date information
+	 */
+	public Date parseDate(String s) {
+		SimpleDateFormat format1 = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z");
+		format1.setTimeZone(TimeZone.getTimeZone("GMT"));
+		SimpleDateFormat format2 = new SimpleDateFormat("E, dd-MMM-yy HH:mm:ss z");
+		format2.setTimeZone(TimeZone.getTimeZone("GMT"));
+		SimpleDateFormat format3 = new SimpleDateFormat("EEE MMM dd HH:mm:ss yyyy");
+		format3.setTimeZone(TimeZone.getTimeZone("GMT"));
+		Date date = null;
+		try {
+			date = format1.parse(s);
+		} catch (ParseException e) {
+			date = null;
+		}
+		if (date == null) {
+			try {
+				date = format2.parse(s);
+			} catch (ParseException e) {
+				date = null;
+			}
+		}
+		if (date == null) {
+			try {
+				date = format3.parse(s);
+			} catch (ParseException e) {
+				date = null;
+			}
+		}
+		return date;
+	}
+	
+	/**
+	 * Check if the path is outside the root directory, and simplify the path
 	 * @param path gives the address of the resource
 	 * @return true if it is inside the root directory
 	 */
-	public boolean insideRoot(String path) {
-		String[] strs = path.split("/");
-		int count = 0;
+	public boolean simplifyPath(boolean absolute) {
+		StringBuilder sb = new StringBuilder();
+		List<String> list = new ArrayList<String>();
+		String[] strs = initMap.get("Path").split("/");
+		
+		//check if the path is within the first level directory
 		for(String s: strs) {
-			if(s.length() == 0 || s.equals(".")) {
-				continue;
-			} else if(s.equals("..")) {
-				if(count == 0) return false;
-				count--;
-			} else {
-				count++;
+			if(s.length() == 0 || s.equals(".")) continue;
+			else if(s.equals("..")) {
+				if(list.size() == 0) return false;
+				list.remove(list.size() - 1);
 			}
+			else list.add(s);
+		}
+		
+		//compose the simplified path
+		for(String s: list) sb.append("/" + s);
+		if(sb.length() == 0) sb.append("/");
+		
+		// update the simplified file path, and check root directory if absolute path
+		String update = sb.toString();
+		if(absolute) {
+			if(!update.startsWith(root)) return false;
+			initMap.put("Path", update);
+		} else {
+			initMap.put("Path", root + sb.toString());
 		}
 		return true;
 	}
 	
-	/*************************************************/
-	// TODO
-	public void getContent() {
-		String path = simplifyPath();
-	}
-	
-	public String simplifyPath() {
-		StringBuilder sb = new StringBuilder();
-		
-		return sb.toString();
-	}
-	
-	/*************************************************/
-	
 	/**
-	 * Check if the request header is valid by examing the first line of request
+	 * Check if the request header is valid by examining the first line of request
 	 * @return
 	 */
 	public boolean validHeader() {
