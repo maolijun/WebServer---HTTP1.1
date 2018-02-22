@@ -1,6 +1,11 @@
 package edu.upenn.cis455.hw1;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
+import java.io.IOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -11,24 +16,25 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
+import org.apache.log4j.Logger;
 
 public class HttpRequest {
 	private Map<String, String> initMap;
 	private Map<String, String> headerMap;
 	private File file;
 	private String fileType;
+	private byte[] binary;
 	private Set<String> httpVerb;
-	private boolean isWaiting;
 	private String serverAddr;
 	private String root;
 	private int code; // 200, 304, 400, 403, 404, 500, 501, 505
+	private static final Logger log = Logger.getLogger(Worker.class.getName());
 	
 	HttpRequest(int port, String rootDir) {
 		initMap = new HashMap<String, String>();
 		headerMap = new HashMap<String, String>();
 		fileType = "text/html";
 		httpVerb = new HashSet<String>();
-		isWaiting = true;
 		code = 200;
 		serverAddr = "http://localhost:" + port;
 		root = rootDir;
@@ -45,15 +51,8 @@ public class HttpRequest {
 		headerMap.clear();
 		file = null;
 		fileType = "text/html";
-		isWaiting = true;
 		code = 200;
-	}
-	
-	/**
-	 * Set the waiting status to false
-	 */
-	public void setWork() {
-		isWaiting = false;
+		binary = null;
 	}
 	
 	/**
@@ -76,19 +75,19 @@ public class HttpRequest {
 	}
 
 	/**
-	 * Get the status of whether the thread is working on a request
-	 * @return
-	 */
-	public boolean getWorkStatus() {
-		return isWaiting;
-	}
-
-	/**
 	 * Get the initial map
 	 * @return the initial line map
 	 */
 	public Map<String, String> getInitMap(){
 		return initMap;
+	}
+	
+	/**
+	 * Get the root directory of the program
+	 * @return the root directory
+	 */
+	public String getRoot() {
+		return root;
 	}
 
 	/**
@@ -116,6 +115,14 @@ public class HttpRequest {
 	}
 	
 	/**
+	 * Get the binary data files
+	 * @return the content of the binary data file
+	 */
+	public byte[] getBinary() {
+		return binary;
+	}
+	
+	/**
 	 * Check if the given directory or file could be accessed
 	 * @return true if the resource is accessible
 	 */
@@ -137,12 +144,12 @@ public class HttpRequest {
 	public void checkFile() {
 		String path = initMap.get("Path");
 		if(path.equals("/control") || path.equals("/shutdown")) return;
-		file = new File(path);
+		file = new File(root + path);
 		if(!file.exists()) {
 			code = 404;
 		} else if(file.isFile()) {
-			if(!validFileType()) return;
-			modifyCheck();
+			if(!validFileType() || !modifyCheck()) return;
+			readContent();
 		} 
 	}
 	
@@ -169,21 +176,44 @@ public class HttpRequest {
 	}
 	
 	/**
+	 * Read the content of the file and cache it in the byte array
+	 */
+	public void readContent() {
+		FileInputStream stream = null;
+		try {
+			stream = new FileInputStream(file);
+			binary = new byte[(int)file.length()];
+			stream.read(binary);
+		} catch (FileNotFoundException e) {
+			code = 404;
+		} catch (IOException e) {
+			code = 500;
+		} finally {
+			try {
+				if(stream != null) stream.close();
+			} catch (IOException e) {
+				return;
+			}
+		}
+	}
+	
+	/**
 	 * Check if the date condition is satisfied
 	 */
-	public void modifyCheck() {
+	public boolean modifyCheck() {
 		Date lastModified = new Date(file.lastModified());
 		if(headerMap.containsKey("if-modified-since")) {
 			Date requireDate = parseDate(headerMap.get("if-modified-since"));
 			if(requireDate != null && requireDate.after(lastModified)) {
 				code = 304;
-				return;
+				return false;
 			}
 		} 
 		if(headerMap.containsKey("if-unmodified-since")) {
 			Date requireDate = parseDate(headerMap.get("if-unmodified-since"));
 			if(requireDate != null && requireDate.before(lastModified)) code = 412;
 		}
+		return code == 200;
 	}
 	
 	/**
@@ -249,10 +279,9 @@ public class HttpRequest {
 		String update = sb.toString();
 		if(absolute) {
 			if(!update.startsWith(root)) return false;
-			initMap.put("Path", update);
-		} else {
-			initMap.put("Path", root + sb.toString());
+			else update = update.substring(root.length());
 		}
+		initMap.put("Path", update);
 		return true;
 	}
 	
@@ -284,7 +313,7 @@ public class HttpRequest {
 	 * @return true if the request is well-formed
 	 */
 	public boolean badRequest() {
-		if(initMap.get("Protocol").equals("HTTP/1.1") && !headerMap.containsKey("host")) return true;
+		if(initMap.get("Protocol").equals("HTTP/1.1") && !headerMap.containsKey("Host")) return true;
 		if(initMap.get("Path").contains("http://") && !initMap.get("Protocol").equals("HTTP/1.1")) return true;
 		return false;
 	}

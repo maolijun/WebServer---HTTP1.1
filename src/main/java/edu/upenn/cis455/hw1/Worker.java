@@ -20,11 +20,13 @@ public class Worker implements Runnable{
 	private BlockingQueue<Socket> blockingQueue;
 	private int number;
 	private HttpRequest currReq;
+	private ThreadPool tpool;
 	private static final Logger log = Logger.getLogger(Worker.class.getName());
 	
-	Worker(BlockingQueue<Socket> queue, int num, String rootDirectory, int port) {
+	Worker(BlockingQueue<Socket> queue, int num, String rootDirectory, int port, ThreadPool pool) {
 		blockingQueue = queue;
 		number = num;
+		tpool = pool;
 		currReq = new HttpRequest(port, rootDirectory);
 		log.info("Worker thread " + number + " starts running");
 	}
@@ -38,7 +40,7 @@ public class Worker implements Runnable{
 			try {
 				// retrieve socket from the queue and set timeout for read
 				client = blockingQueue.poll();
-				client.setSoTimeout(15000);
+				client.setSoTimeout(10000);
 					
 				// set up the input stream for reading and process request
 	            List<String> req = readRequest(client);
@@ -50,18 +52,23 @@ public class Worker implements Runnable{
 	                sendResponse(client);
 	                
 	                // shut down server if necessary
-	                if(currReq.getInitMap().get("Path").equals("/shutdown")) HttpServer.shutDownServer();
+	                if(currReq.getInitMap().get("Path").equals("/shutdown")) {
+	                		tpool.closeThreads();
+	                		HttpServer.shutDownServer();
+	                }
 	            } 
 			} catch(InterruptedException e) {
 				log.error("Interrupted when blocking - Worker " + number);
+				Thread.currentThread().interrupt();
 			} catch(SocketException e) {
 				log.error("Error for socket connection - Worker " + number);
 			}
 			
 			//close the socket and clean variables
 			currReq.clear();
+			tpool.setStatus(number, "Waiting");
 			try {
-				if(client != null && !client.isClosed()) client.close();
+				if(client != null) client.close();
 			} catch(IOException e) {
 				log.error("Error when closing socket - Worker " + number);
 			}
@@ -78,7 +85,6 @@ public class Worker implements Runnable{
 	 */
 	public List<String> readRequest(Socket client) throws InterruptedException{
 		List<String> list = new ArrayList<String>();
-		currReq.setWork();
 		try {
 			InputStreamReader reader= new InputStreamReader(client.getInputStream());
 	        BufferedReader br = new BufferedReader(reader);
@@ -89,8 +95,6 @@ public class Worker implements Runnable{
 				list.add(line);
 				line = br.readLine();
 			}
-            br.close();
-            reader.close();
 		} catch(SocketTimeoutException e) {
 			log.error("Reading timeout from socket - Worker " + number);
 			list.clear();
@@ -117,8 +121,12 @@ public class Worker implements Runnable{
 	 */
 	public void parseFirstLine(String header) {
 		String[] words = header.split("\\s+");
-		if(words.length != 3) return;
+		if(words.length != 3) {
+			tpool.setStatus(number, "Missing Arguments from Request");
+			return;
+		}
 		currReq.setInitMap(words);
+		tpool.setStatus(number, currReq.getInitMap().get("Path"));
 	}
 	
 	/**
@@ -144,15 +152,16 @@ public class Worker implements Runnable{
 			
 			// get status code; generate status line and message body according to status code
 			int code = currReq.getCode();
+			String path = currReq.getInitMap().get("Path");
 			String status = genStatusLine(code);
 			String body = "";
 			File file = currReq.getFile();
+			boolean validFile = false;
 			if(code == 200) {
 				output.print(genStatusLine(100) + "\r\n");
 				output.print(status);
 				
 				//generate the message body according to the request path
-				String path = currReq.getInitMap().get("Path");
 				if(path.equals("/control")) {
 					body = genControl();
 				} else if(path.equals("/shutdown")) {
@@ -160,31 +169,30 @@ public class Worker implements Runnable{
 				} else if(file.isDirectory()){
 					body = genFileList();
 				} else {
-					output.print(genHeader(file.length()));
-					genFileContent(file, output);
-					output.flush();
-					output.close();
-					//body = "\n<html><body>Hello world!</body></html>\n";
-					return;
+					validFile = true;
 				}
-				
 			} else {
 				output.print(status);
 				body = genErrorPage(status);
 			}
 			
 			//generate remaining header and send message body with regard to request method
-			output.print(genHeader(body.length()));
-			if(!currReq.getInitMap().get("Type").equals("HEAD")) output.print(body);
+			if(validFile) output.print(genHeader(file.length()));
+			else output.print(genHeader(body.length()));
+			if(!currReq.getInitMap().get("Type").equals("HEAD")) {
+				if(validFile) output.write(currReq.getBinary());
+				else output.print(body);
+			}
 			output.flush();
-			output.close();
 		} catch (IOException e) {
 			log.error("Error when getting output stream or writing to stream - Worker " + number);
 		}
 	}
 
-	/**********************************/
-	// TODO
+	/**
+	 * Generate the file list page under a directory
+	 * @return the file list html page
+	 */
 	public String genFileList() {
 		StringBuilder sb = new StringBuilder();
     		sb.append("<html>\n");
@@ -229,10 +237,54 @@ public class Worker implements Runnable{
     		return sb.toString();
 	}
 	
+	/**
+	 * Generate the control panel
+	 * @return the control html page 
+	 */
 	public String genControl() {
-		return "";
+		List<String> status = tpool.getStatus();
+		StringBuilder sb = new StringBuilder();
+    		sb.append("<html>\n");
+    		sb.append("<title>\n");
+    		sb.append("Welcome to the Server\n");
+    		sb.append("</title>\n");
+    		sb.append("<body>\n");
+    		sb.append("<font size=\"5\">\n");
+    		sb.append("<b>");
+    		sb.append("Developer : Lijun Mao<br>");
+    		sb.append("SEAS login: maolijun<br>");
+    		sb.append("</b>");
+    		sb.append("</font>\n");
+    		sb.append("<p>");
+    		sb.append("<table style=\"font-size:20px;\">");
+    		sb.append("<tr><td>");
+        	sb.append("<b>");
+        	sb.append("Thread");
+        	sb.append("</b>");
+        	sb.append("</td><td>");
+        	sb.append("<b>");
+        	sb.append("Status");
+        	sb.append("</b>");
+        	sb.append("</td></tr>");
+        	for(int i = 0; i < status.size(); i++) {
+        		sb.append("<tr><td>");
+    			sb.append("Thread " + i);
+    			sb.append("</td><td>");
+    			sb.append(status.get(i));
+    			sb.append("</td></tr>");
+        	}
+    		sb.append("</table>");
+    		sb.append("<p>");
+    		sb.append("<a href=\"/shutdown\"><button>" +  "Shutdown" + "</button></a>");
+        	sb.append("</body>\n");
+        	sb.append("</html>\n");
+		return sb.toString();
 	}
 	
+	/**
+	 * Generate the shutdown page
+	 * @return the shutdown html page
+	 */
 	public String genShutdown() {
 		StringBuilder sb = new StringBuilder();
     		sb.append("<html>\n");
@@ -242,11 +294,6 @@ public class Worker implements Runnable{
     		sb.append("</html>\n");
 		return sb.toString();
 	}
-	
-	public void genFileContent(File file, PrintStream output) {
-		
-	}
-	/**********************************/
 	
 	/**
 	 * Generate error page with specified error message

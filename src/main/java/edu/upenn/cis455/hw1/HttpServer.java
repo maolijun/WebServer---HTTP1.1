@@ -38,21 +38,22 @@ class HttpServer {
 				Socket client = serverSocket.accept();
 				pool.handleConnection(client);
 			} catch (IOException e) {
-				log.error("Server socket closed");
+				log.error("Http Server socket closed");
 				break;
 			} catch (InterruptedException e) {
 				log.error("Interrupted while waiting the blocking queue");
 				break;
 			}
 		}
+		pool.checkTerminate();
+		log.info("Program Exit");
 	}
 	
 	public static void shutDownServer() {
 		try {
-			pool.closeThreads();
 			serverSocket.close();
 		} catch (IOException e) {
-			log.error("Problem closing server socket");
+			log.error("Error closing server socket");
 		}
 	}
 }
